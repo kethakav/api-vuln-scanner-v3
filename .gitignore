@@ -1,0 +1,109 @@
+############################
+# OS / environment
+############################
+.DS_Store
+Thumbs.db
+Desktop.ini
+.python-version
+
+############################
+# Python
+############################
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments / secrets
+.env
+.env.*
+.venv
+venv/
+ENV/
+env/
+env.bak/
+*.pem
+*.key
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.code-workspace
+
+# Logs
+logs/
+*.log
+
+############################
+# Docker / Compose
+############################
+docker-compose.override.yml
+*.pid
+
+############################
+# Project-specific
+############################
+temp/
+
+# Common local DB files (optional)
+*.sqlite3
+db.sqlite3
+

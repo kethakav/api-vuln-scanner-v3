@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  zap-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zap-api-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./temp:/tmp
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - zap-network
+
+networks:
+  zap-network:
+    driver: bridge

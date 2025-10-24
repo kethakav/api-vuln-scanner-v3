@@ -10,7 +10,7 @@ services:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./temp:/tmp
+      - zapwork:/zap/wrk
     environment:
       - PYTHONUNBUFFERED=1
       - DOCKER_HOST=unix:///var/run/docker.sock
@@ -23,3 +23,7 @@ services:
 networks:
   zap-network:
     driver: bridge
+
+volumes:
+  zapwork: 
+    name: zapwork

@@ -15,6 +15,8 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from zapv2 import ZAPv2
+import os
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +28,8 @@ ZAP_MEMORY_LIMIT = "2g"
 ZAP_CPU_LIMIT = 1.0
 ZAP_BASE_PORT = 8090
 ZAP_IMAGE = "zaproxy/zap-stable:latest"
+SHARED_HOST_DIR = os.path.abspath(os.path.join(os.getcwd(), "temp"))
+SHARED_CONTAINER_DIR = "/zap/wrk"
 
 # Global state management
 zap_instances: Dict[str, Dict[str, Any]] = {}
@@ -37,11 +41,19 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
     global docker_client
     try:
+        # Ensure shared host directory exists (used to mount into ZAP containers)
+        os.makedirs(SHARED_HOST_DIR, exist_ok=True)
+
         docker_client = docker.from_env()
         # Pull ZAP image on startup
         logger.info(f"Pulling ZAP Docker image: {ZAP_IMAGE}")
         docker_client.images.pull(ZAP_IMAGE)
         logger.info("ZAP image pulled successfully")
+        logger.info(
+            "Shared volume prepared: host '%s' -> container '%s'",
+            SHARED_HOST_DIR,
+            SHARED_CONTAINER_DIR,
+        )
         yield
     finally:
         # Cleanup on shutdown
@@ -144,6 +156,10 @@ async def create_zap_container(port: int, api_key: str) -> str:
             mem_limit=ZAP_MEMORY_LIMIT,
             cpu_quota=int(ZAP_CPU_LIMIT * 100000),
             cpu_period=100000,
+            volumes={
+                # Mount host temp directory into the container so ZAP can access uploaded files
+                "zapwork": {"bind": SHARED_CONTAINER_DIR, "mode": "rw"}
+            },
             command=[
                 "zap.sh",
                 "-daemon",
@@ -275,19 +291,39 @@ async def delete_instance(instance_id: str):
 
 
 @app.post("/instances/{instance_id}/openapi")
-async def import_openapi(instance_id: str, file: UploadFile = File(...)):
+async def import_openapi(
+    instance_id: str, 
+    target: str,
+    file: UploadFile = File(...)):
     """Import OpenAPI specification"""
     zap = get_zap_client(instance_id)
     
     try:
         content = await file.read()
-        temp_path = f"/tmp/openapi_{uuid.uuid4().hex}.json"
-        
-        with open(temp_path, "wb") as f:
+
+        # Normalize extension and create a safe filename
+        original_ext = (Path(file.filename).suffix or ".json").lower()
+        if original_ext not in (".json", ".yaml", ".yml"):
+            # Default to .json if unknown
+            original_ext = ".json"
+
+        unique_name = f"openapi_{uuid.uuid4().hex}{original_ext}"
+        container_file_path = f"{SHARED_CONTAINER_DIR}/{unique_name}"
+
+        # Save to the shared host directory (mounted into container)
+        with open(container_file_path, "wb") as f:
             f.write(content)
-        
-        # Import OpenAPI spec
-        result = zap.openapi.import_file(temp_path)
+
+        logger.info(
+            "Saved OpenAPI to shared volume: '%s'",
+            container_file_path,
+        )
+
+        if target:
+            result = zap.openapi.import_file(container_file_path, target=target)
+        else:
+            # Import OpenAPI spec from the in-container path
+            result = zap.openapi.import_file(container_file_path)
         
         return {
             "message": "OpenAPI spec imported successfully",

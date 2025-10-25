@@ -3,7 +3,7 @@ OWASP ZAP API Testing Backend
 FastAPI application for managing ZAP instances and running security scans
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -100,6 +100,9 @@ class SpiderRequest(BaseModel):
     recurse: Optional[bool] = True
     context_name: Optional[str] = None
 
+class OpenAPIImportRequest(BaseModel):
+    target: Optional[str] = None
+    context_name: Optional[str] = None
 
 class ContextRequest(BaseModel):
     context_name: str
@@ -111,13 +114,17 @@ class ScanPolicyRequest(BaseModel):
     policy_name: str
     scan_ids: List[int] = []
 
+class UpdateUrlsRequest(BaseModel):
+    context_name: str
+    all_urls: List[str] = []
+    include_urls: List[str] = []
 
 class AlertsResponse(BaseModel):
     alerts: List[Dict[str, Any]]
     count: int
 
 
-# Helper Functions
+# Helper Functions ===================================================================================================
 def cleanup_all_instances():
     """Clean up all ZAP instances on shutdown"""
     global zap_instances, docker_client
@@ -201,8 +208,7 @@ def get_zap_client(instance_id: str) -> ZAPv2:
         }
     )
 
-
-# API Endpoints
+# API Endpoints ===================================================================================================
 
 @app.get("/")
 async def root():
@@ -293,8 +299,10 @@ async def delete_instance(instance_id: str):
 @app.post("/instances/{instance_id}/openapi")
 async def import_openapi(
     instance_id: str, 
-    target: str,
-    file: UploadFile = File(...)):
+    target: Optional[str] = Form(None),
+    context_name: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+):
     """Import OpenAPI specification"""
     zap = get_zap_client(instance_id)
     
@@ -324,7 +332,13 @@ async def import_openapi(
         else:
             # Import OpenAPI spec from the in-container path
             result = zap.openapi.import_file(container_file_path)
-        
+
+        if context_name:
+            # Add all imported URLs to the specified context
+            urls = zap.core.urls()
+            for url in urls:
+                zap.context.include_in_context(context_name, url)
+
         return {
             "message": "OpenAPI spec imported successfully",
             "result": result
@@ -371,6 +385,29 @@ async def list_contexts(instance_id: str):
         return {"contexts": contexts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/instances/{instance_id}/update-urls")
+async def update_urls(instance_id: str, request: UpdateUrlsRequest):
+    """Update context URLs"""
+    zap = get_zap_client(instance_id)
+
+    try:
+        # First, remove all URLs from the context
+        for url in request.all_urls:
+            zap.context.exclude_from_context(request.context_name, url)
+
+        # Then, include only the specified URLs
+        for url in request.include_urls:
+            zap.context.include_in_context(request.context_name, url)
+
+        return {
+            "context_name": request.context_name,
+            "included_urls": request.include_urls,
+            "message": "Context URLs updated successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error updating context URLs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))    
 
 
 @app.post("/instances/{instance_id}/spider")
@@ -384,9 +421,9 @@ async def start_spider(instance_id: str, request: SpiderRequest):
             url=request.target_url,
             maxchildren=request.max_children,
             recurse=request.recurse,
-            contextname=request.context_name
+            # contextname=request.context_name
         )
-        
+
         return {
             "scan_id": scan_id,
             "message": "Spider started successfully"
@@ -413,12 +450,23 @@ async def spider_status(instance_id: str, scan_id: str):
 
 
 @app.get("/instances/{instance_id}/spider/{scan_id}/results")
-async def spider_results(instance_id: str, scan_id: str):
+async def spider_results(instance_id: str, scan_id: str, context_name: Optional[str] = None):
     """Get spider scan results"""
     zap = get_zap_client(instance_id)
+    logger.info(f"Fetching spider results for scan ID: {scan_id} with context: {context_name}")
     
     try:
         results = zap.spider.results(scan_id)
+        if context_name:
+            logger.info(f"Filtering spider results by context: {context_name}")
+            context_urls = []
+            for url in results:
+                zap.context.include_in_context(context_name, url)   
+                context_urls.append(url)
+            results = context_urls
+
+        context = zap.context.context(context_name) if context_name else None
+        logger.info(context)
         return {
             "scan_id": scan_id,
             "urls": results,
@@ -432,21 +480,36 @@ async def spider_results(instance_id: str, scan_id: str):
 async def start_active_scan(instance_id: str, request: ScanRequest):
     """Start active scan"""
     zap = get_zap_client(instance_id)
-    
-    try:
-        scan_id = zap.ascan.scan(
-            url=request.target_url,
-            contextid=request.context_name if request.context_name else None
-        )
-        
-        return {
-            "scan_id": scan_id,
-            "scan_type": "active",
-            "message": "Active scan started successfully"
-        }
-    except Exception as e:
-        logger.error(f"Error starting active scan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    logger.info(f"Starting {request.scan_type} scan on {request.target_url}")
+    if request.scan_type.lower() == "active":
+        try:
+            zap.core.delete_all_alerts()
+            if request.context_name:
+                context_id = zap.context.context(request.context_name).get("id")
+                logger.info(f"Using context '{request.context_name}' with ID {context_id} for active scan")
+                scan_id = zap.ascan.scan(
+                    url=request.target_url,
+                    contextid=context_id if request.context_name else None
+                )
+            else:
+                scan_id = zap.ascan.scan(url=request.target_url)
+            
+            return {
+                "scan_id": scan_id,
+                "scan_type": "active",
+                "message": "Active scan started successfully"
+            }
+        except Exception as e:
+            logger.error(f"Error starting active scan: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        # Run passive scan
+        try:
+            zap.pscan.enable_all_scanners()
+            return {"message": "Passive scanning enabled"}
+        except Exception as e:
+            logger.error(f"Error enabling passive scan: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/instances/{instance_id}/scan/active/{scan_id}/status")
